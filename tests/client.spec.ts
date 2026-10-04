@@ -12,7 +12,8 @@ function requestInit(fetchImpl: ReturnType<typeof vi.fn>, callIndex = 0): Reques
   return (fetchImpl.mock.calls[callIndex] as [string, RequestInit])[1]
 }
 
-const creds = { accessKeyId: 'AKIAIOSFODNN7EXAMPLE', secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' }
+// Test-only fake credentials for SigV4 math; never real AWS credentials.
+const creds = { accessKeyId: 'EXAMPLEKEYIDFORTESTS', secretAccessKey: 'example-secret-key-for-sigv4-tests-only' }
 
 describe('AwsClient', () => {
   it('returns caller identity from STS', async () => {
@@ -35,7 +36,7 @@ describe('AwsClient', () => {
     expect(init.body).toContain('Action=GetCallerIdentity')
     expect(init.body).toContain('Version=2011-06-15')
     const headers = init.headers as Record<string, string>
-    expect(headers.authorization).toContain('AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/')
+    expect(headers.authorization).toContain('AWS4-HMAC-SHA256 Credential=EXAMPLEKEYIDFORTESTS/')
     expect(headers.authorization).toContain('/sts/aws4_request')
     expect(headers['x-amz-date']).toBe('20260101T000000Z')
   })
@@ -173,7 +174,7 @@ describe('AwsClient', () => {
     expect(headers['x-amz-date']).toBe('20260101T000000Z')
     // Cross-check the Signature against an independent HMAC-SHA256 implementation.
     expect(headers.authorization).toBe(
-      `AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260101/us-east-1/sts/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature=${sigV4Signature()}`,
+      `AWS4-HMAC-SHA256 Credential=EXAMPLEKEYIDFORTESTS/20260101/us-east-1/sts/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature=${sigV4Signature()}`,
     )
   })
 })
