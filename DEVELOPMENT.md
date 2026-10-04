@@ -1,0 +1,63 @@
+# dsh-tool-aws 开发文档
+
+## 1. 项目概览
+
+| 项 | 内容 |
+|---|---|
+| 项目名 | `dsh-tool-aws` |
+| 定位 | DeepSeek Harness 的 AWS 只读巡检插件 |
+| 版本 | v0.1.0 |
+| 架构 | Cordis 插件 + `ctx.tools.register(defineTool(...))` |
+| API | STS / EC2 Query(XML)、S3 REST(XML)、Lambda JSON、CloudWatch Logs/Monitoring Query(XML) |
+| 认证 | AWS SigV4（WebCrypto HMAC-SHA256） |
+
+### 1.1 目录
+
+```text
+src/signer.ts       SigV4 签名器：canonical request、string-to-sign、签名头
+src/client.ts       AwsClient：Query/XML 解析、fetch 注入、超时、错误映射
+src/index.ts        7 个 defineTool 定义与插件 apply
+tests/client.spec.ts  客户端契约测试（含固定时间 SigV4 签名对照）
+tests/tools.spec.ts   工具注册、凭证保护、render 测试
+examples/cordis.yml   dsh 组合配置示例
+```
+
+## 2. 技术决策
+
+### 2.1 签名
+
+- SigV4 使用 WebCrypto（Node 22+ 全局可用），签名链 `kDate -> kRegion -> kService -> kSigning` 每步使用原始字节而非 hex 字符串。
+- 测试用 Node `node:crypto` 的独立参考实现对拍固定时间的 Authorization 头。
+- Query API 以 `application/x-www-form-urlencoded` POST 发送；EC2/STS/Logs/Monitoring 返回 XML，由内置轻量 parser 解析并拆除 `*Response`/`*Result` 包装。
+- S3 ListBuckets 走 `s3.amazonaws.com` 全局 REST 端点；Lambda 走 JSON API，分页 `Marker` 作为 canonical query 参与签名。
+- `endpoint` 配置对所有服务生效（scheme+host），主要用于本地 mock。
+
+### 2.2 已知边界
+
+- Query API 的列表型参数（如 Filter/InstanceId）已按 `.N` 编号展开；`FilterLogEvents` 的 `logStreamNames` 使用 `logStreamNames.member.1` 形式。
+- EC2 filters 参数以 `filtersJson` 字符串传入，非法 JSON 返回 `{ found: false }`。
+- 未实现写操作；S3 region 行为按全局端点约定，多区域精细签名留待后续。
+
+### 2.3 错误映射
+
+| 场景 | 返回/行为 |
+|---|---|
+| 未配置凭证 | `{ found: false, reason }` |
+| AWS 4xx/5xx | 抛 `AwsError`，工具层转 `{ found: false, reason }` |
+
+## 3. 测试
+
+```sh
+npm install
+npm run typecheck
+npm test
+npm run build
+```
+
+当前 17 个测试覆盖：STS 身份映射、EC2 过滤/分页/tag、S3 XML 解析、Lambda 分页、CloudWatch 日志组/事件/指标、缺凭证保护、HTTP 错误映射、固定时间 SigV4 签名对照。
+
+## 4. 后续方向
+
+- ECR 只读工具（`DescribeRepositories`/`ListImages`/`DescribeImages`）。
+- SigV4 用 AWS 官方测试向量复核 canonical headers 细节。
+- 按服务区域端点自动签名（S3 非 us-east-1）。
