@@ -58,7 +58,7 @@ export async function signRequest(params: SigV4Params): Promise<Record<string, s
     params.method,
     params.canonicalUri,
     new URLSearchParams(params.query).toString(),
-    canonicalHeadersString + '\n',
+    canonicalHeadersString,
     signedHeaders,
     payloadHash,
   ].join('\n')

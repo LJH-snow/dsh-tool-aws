@@ -103,7 +103,89 @@ function asString(record: Record<string, unknown>, key: string): string {
 
 function asNumber(record: Record<string, unknown>, key: string): number {
   const value = record[key]
-  return typeof value === 'number' ? value : 0
+  if (typeof value === 'number') return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return 0
+}
+
+type XmlNode = {
+  name: string
+  text: string
+  children: XmlNode[]
+}
+
+const xmlArrayChildNames = new Set(['item', 'member', 'Bucket', 'logGroup', 'event'])
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\\d+);/g, (_match, decimal: string) => String.fromCodePoint(Number.parseInt(decimal, 10)))
+    .replace(/&amp;/g, '&')
+}
+
+function stripXmlNamespace(name: string): string {
+  const separator = name.lastIndexOf(':')
+  return separator >= 0 ? name.slice(separator + 1) : name
+}
+
+function xmlNodeValue(node: XmlNode): unknown {
+  if (!node.children.length) return decodeXmlText(node.text.trim())
+  const childNames = node.children.map(child => child.name)
+  if (childNames.every(name => name === childNames[0]) && xmlArrayChildNames.has(childNames[0])) {
+    return node.children.map(xmlNodeValue)
+  }
+  const result: Record<string, unknown> = {}
+  for (const child of node.children) {
+    const value = xmlNodeValue(child)
+    if (Object.hasOwn(result, child.name)) {
+      const previous = result[child.name]
+      result[child.name] = Array.isArray(previous) ? [...previous, value] : [previous, value]
+    } else {
+      result[child.name] = value
+    }
+  }
+  return result
+}
+
+function parseXml(xml: string): Record<string, unknown> {
+  const stack: XmlNode[] = []
+  let root: XmlNode | null = null
+  const tokenPattern = /<[^>]+>|[^<]+/g
+  for (const token of xml.match(tokenPattern) ?? []) {
+    if (!token) continue
+    if (token.startsWith('<')) {
+      if (token.startsWith('<?') || token.startsWith('<!')) continue
+      if (token.startsWith('</')) {
+        stack.pop()
+        continue
+      }
+      const tagMatch = token.match(/^<\\s*([^\\s/>]+)/)
+      if (!tagMatch) continue
+      const node: XmlNode = { name: stripXmlNamespace(tagMatch[1]), text: '', children: [] }
+      const parent = stack[stack.length - 1]
+      if (parent) parent.children.push(node)
+      else root = node
+      if (!token.endsWith('/>')) stack.push(node)
+    } else if (stack.length) {
+      stack[stack.length - 1].text += token
+    }
+  }
+  if (!root) return {}
+  return { [root.name]: xmlNodeValue(root) }
+}
+
+function unwrapQueryResponse(value: unknown): Record<string, unknown> {
+  const record = asRecord(value)
+  const responseKey = Object.keys(record).find(key => key.endsWith('Response'))
+  if (responseKey && Object.keys(record).length === 1) return asRecord(record[responseKey])
+  return record
 }
 
 function mapEc2Instance(data: unknown): Ec2InstanceInfo {
@@ -192,13 +274,22 @@ function mapMetric(data: unknown): CloudWatchMetricInfo {
 }
 
 function mapStsIdentity(data: unknown): StsIdentityInfo {
-  const r = asRecord(data)
-  const result = asRecord(r.GetCallerIdentityResult)
+  const r = queryPayload(data)
+  const nested = asRecord(r.GetCallerIdentityResult)
+  const result = Object.keys(nested).length ? nested : r
   return {
     userId: asString(result, 'UserId'),
     account: asString(result, 'Account'),
     arn: asString(result, 'Arn'),
   }
+}
+
+function queryPayload(data: unknown): Record<string, unknown> {
+  const root = asRecord(data)
+  const responseKey = Object.keys(root).find(key => key.endsWith('Response'))
+  const response = responseKey ? asRecord(root[responseKey]) : root
+  const resultKey = Object.keys(response).find(key => key.endsWith('Result'))
+  return resultKey ? asRecord(response[resultKey]) : response
 }
 
 export class AwsClient {
@@ -227,7 +318,7 @@ export class AwsClient {
   }
 
   private queryUrl(service: string): string {
-    return this.endpoint && service.includes('.') ? this.endpoint : `https://${service}.${this.region}.amazonaws.com/`
+    return this.endpoint ? `${this.endpoint}/` : `https://${service}.${this.region}.amazonaws.com/`
   }
 
   private async query(
@@ -264,7 +355,8 @@ export class AwsClient {
       body,
       now: this.now,
     })
-    return await this.send(url, 'POST', headers, body, signal) as Record<string, unknown>
+    const raw = await this.send(url, 'POST', headers, body, signal)
+    return typeof raw === 'string' ? parseXml(raw) : asRecord(raw)
   }
 
   private async json(
@@ -274,7 +366,9 @@ export class AwsClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (!this.hasCredentials()) throw new AwsError('AWS credentials not configured.', 401)
-    const url = new URL(this.endpoint || `https://${service}.${this.region}.amazonaws.com/${path.replace(/^\//, '')}`)
+    const url = this.endpoint
+      ? new URL(path.replace(/^\//, ''), `${this.endpoint}/`)
+      : new URL(`https://${service}.${this.region}.amazonaws.com/${path.replace(/^\//, '')}`)
     const headers = await signRequest({
       accessKeyId: this.accessKeyId,
       secretAccessKey: this.secretAccessKey,
@@ -284,7 +378,7 @@ export class AwsClient {
       host: url.host,
       method,
       canonicalUri: url.pathname,
-      query: {},
+      query: Object.fromEntries(url.searchParams.entries()),
       headers: { 'content-type': 'application/json' },
       body: '',
       now: this.now,
@@ -330,7 +424,7 @@ export class AwsClient {
 
   async stsGetCallerIdentity(signal?: AbortSignal): Promise<StsIdentityInfo> {
     const raw = await this.query('sts', 'GetCallerIdentity', {}, signal)
-    return mapStsIdentity(asRecord(raw))
+    return mapStsIdentity(raw)
   }
 
   async listEc2Instances(options: {
@@ -349,8 +443,8 @@ export class AwsClient {
     if (options.nextToken) params.NextToken = options.nextToken
     params.MaxResults = 200
     const raw = await this.query('ec2', 'DescribeInstances', params, options.signal)
-    const root = asRecord(raw)
-    const reservations = asArray(root.reservationSet).length ? asArray(root.reservationSet) : asArray(asRecord(root.DescribeInstancesResponse ?? {}).reservationSet)
+    const root = queryPayload(raw)
+    const reservations = asArray(root.reservationSet)
     const items = reservations.flatMap((res: unknown) => asArray(asRecord(res).instancesSet).map(mapEc2Instance))
     return { items, nextToken: asString(root, 'nextToken') || asString(root, 'NextToken') }
   }
@@ -404,8 +498,8 @@ export class AwsClient {
       'nextToken': options.nextToken,
       'limit': 50,
     }, options.signal)
-    const root = asRecord(raw)
-    const logGroups = asArray(root.logGroups).length ? asArray(root.logGroups) : asArray(asRecord(root.DescribeLogGroupsResponse ?? {}).logGroups)
+    const root = queryPayload(raw)
+    const logGroups = asArray(root.logGroups)
     return { items: logGroups.map(mapLogGroup), nextToken: asString(root, 'nextToken') || asString(root, 'NextToken') }
   }
 
@@ -420,17 +514,17 @@ export class AwsClient {
   }): Promise<{ items: CloudWatchLogEventInfo[]; nextForwardToken: string }> {
     const raw = await this.query('logs', 'FilterLogEvents', {
       'logGroupName': options.logGroupName,
-      'logStreamNames': options.logStreamName,
+      'logStreamNames.member.1': options.logStreamName,
       'startTime': options.startTime,
       'endTime': options.endTime,
       'limit': options.limit ?? 50,
       'nextToken': options.nextToken,
     }, options.signal)
-    const root = asRecord(raw)
-    const events = asArray(root.events).length ? asArray(root.events) : asArray(asRecord(root.FilterLogEventsResponse ?? {}).events)
+    const root = queryPayload(raw)
+    const events = asArray(root.events)
     return {
       items: events.map(mapLogEvent),
-      nextForwardToken: asString(root, 'nextToken') || asString(asRecord(root.FilterLogEventsResponse ?? {}), 'nextToken') || '',
+      nextForwardToken: asString(root, 'nextToken'),
     }
   }
 
@@ -443,8 +537,8 @@ export class AwsClient {
       'Namespace': options.namespace,
       'MetricName': options.metricName,
     }, options.signal)
-    const root = asRecord(raw)
-    const metrics = asArray(root.metrics).length ? asArray(root.metrics) : asArray(asRecord(root.ListMetricsResponse ?? {}).metrics)
+    const root = queryPayload(raw)
+    const metrics = asArray(root.metrics)
     return { items: metrics.map(mapMetric) }
   }
 }

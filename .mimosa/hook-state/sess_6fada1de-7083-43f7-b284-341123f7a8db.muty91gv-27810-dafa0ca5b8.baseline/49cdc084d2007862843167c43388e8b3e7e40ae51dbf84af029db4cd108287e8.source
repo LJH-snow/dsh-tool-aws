@@ -1,0 +1,23 @@
+/** Minimal AWS Signature Version 4 request signing for AWS Query/JSON APIs. */
+export interface SigV4Params {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+    region: string;
+    service: string;
+    host: string;
+    method: string;
+    canonicalUri: string;
+    query: Record<string, string>;
+    headers: Record<string, string>;
+    body: string;
+    now?: Date;
+}
+/**
+ * Sign a request with AWS Signature Version 4. Returns the headers to send,
+ * including `Authorization`, `X-Amz-Date`, and (optionally) `X-Amz-Security-Token`.
+ *
+ * The payload is form-urlencoded (the AWS Query API body); the body hash is
+ * computed over the raw request body string.
+ */
+export declare function signRequest(params: SigV4Params): Promise<Record<string, string>>;

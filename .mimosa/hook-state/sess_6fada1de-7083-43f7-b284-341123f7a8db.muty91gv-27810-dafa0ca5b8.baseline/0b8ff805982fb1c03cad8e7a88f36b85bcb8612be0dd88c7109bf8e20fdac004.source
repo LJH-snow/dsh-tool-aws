@@ -11,7 +11,7 @@ function tool(name: string) {
 }
 
 describe('dsh-tool-aws tools', () => {
-  it('registers ten read-only tools', () => {
+  it('registers seven read-only tools', () => {
     const names = createTools(makeClient()).map(t => t.name)
     expect(names).toEqual([
       'aws_sts_get_caller_identity',
@@ -21,9 +21,6 @@ describe('dsh-tool-aws tools', () => {
       'aws_list_cloudwatch_log_groups',
       'aws_get_cloudwatch_log_events',
       'aws_list_cloudwatch_metrics',
-      'aws_ecr_list_repositories',
-      'aws_ecr_list_images',
-      'aws_ecr_describe_images',
     ])
   })
 

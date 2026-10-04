@@ -40,6 +40,9 @@ All tools are read-only (`kind: 'read'` or `'search'`).
 | `aws_list_cloudwatch_log_groups` | List CloudWatch log groups with prefix filter |
 | `aws_get_cloudwatch_log_events` | Read log events with stream/time-range filters |
 | `aws_list_cloudwatch_metrics` | List CloudWatch metrics by namespace/name |
+| `aws_ecr_list_repositories` | List ECR repositories in the region |
+| `aws_ecr_list_images` | List image tags/digests in one ECR repository |
+| `aws_ecr_describe_images` | Describe ECR images with scan status and severity counts |
 
 ## Error contract
 

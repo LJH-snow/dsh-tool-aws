@@ -88,6 +88,31 @@ export interface StsIdentityInfo {
   arn: string
 }
 
+export interface EcrRepositoryInfo {
+  registryId: string
+  name: string
+  arn: string
+  uri: string
+  createdAt: string
+  tagMutability: string
+  scanOnPush: boolean
+}
+
+export interface EcrImageIdInfo {
+  tag: string
+  digest: string
+}
+
+export interface EcrImageInfo {
+  digest: string
+  tags: string
+  sizeBytes: number
+  pushedAt: string
+  scanStatus: string
+  criticalCount: number
+  highCount: number
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
@@ -284,6 +309,38 @@ function mapStsIdentity(data: unknown): StsIdentityInfo {
   }
 }
 
+function mapEcrRepository(data: unknown): EcrRepositoryInfo {
+  const r = asRecord(data)
+  return {
+    registryId: asString(r, 'registryId'),
+    name: asString(r, 'repositoryName'),
+    arn: asString(r, 'repositoryArn'),
+    uri: asString(r, 'repositoryUri'),
+    createdAt: asString(r, 'createdAt'),
+    tagMutability: asString(r, 'imageTagMutability'),
+    scanOnPush: asRecord(r.imageScanningConfiguration).scanOnPush === true,
+  }
+}
+
+function mapEcrImageId(data: unknown): EcrImageIdInfo {
+  const r = asRecord(data)
+  return { tag: asString(r, 'imageTag'), digest: asString(r, 'imageDigest') }
+}
+
+function mapEcrImage(data: unknown): EcrImageInfo {
+  const r = asRecord(data)
+  const severity = asRecord(asRecord(r.imageScanFindingsSummary).findingSeverityCounts)
+  return {
+    digest: asString(r, 'imageDigest'),
+    tags: asArray(r.imageTags).map(String).join(', '),
+    sizeBytes: asNumber(r, 'imageSizeInBytes'),
+    pushedAt: asString(r, 'imagePushedAt'),
+    scanStatus: asString(asRecord(r.imageScanStatus), 'status'),
+    criticalCount: asNumber(severity, 'CRITICAL'),
+    highCount: asNumber(severity, 'HIGH'),
+  }
+}
+
 function queryPayload(data: unknown): Record<string, unknown> {
   const root = asRecord(data)
   const responseKey = Object.keys(root).find(key => key.endsWith('Response'))
@@ -384,6 +441,31 @@ export class AwsClient {
       now: this.now,
     })
     return await this.send(url, method, headers, undefined, signal)
+  }
+
+  /** ECR JSON-RPC style call: application/x-amz-json-1.1 with an X-Amz-Target header. */
+  private async ecr(action: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    if (!this.hasCredentials()) throw new AwsError('AWS credentials not configured.', 401)
+    const url = this.endpoint ? new URL('/', `${this.endpoint}/`) : new URL(`https://api.ecr.${this.region}.amazonaws.com/`)
+    const payload = JSON.stringify(body)
+    const headers = await signRequest({
+      accessKeyId: this.accessKeyId,
+      secretAccessKey: this.secretAccessKey,
+      sessionToken: this.sessionToken,
+      region: this.region,
+      service: 'ecr',
+      host: url.host,
+      method: 'POST',
+      canonicalUri: '/',
+      query: {},
+      headers: {
+        'content-type': 'application/x-amz-json-1.1',
+        'x-amz-target': `AmazonEC2ContainerRegistry_V20150921.${action}`,
+      },
+      body: payload,
+      now: this.now,
+    })
+    return asRecord(await this.send(url, 'POST', headers, payload, signal))
   }
 
   private async send(
@@ -540,6 +622,40 @@ export class AwsClient {
     const root = queryPayload(raw)
     const metrics = asArray(root.metrics)
     return { items: metrics.map(mapMetric) }
+  }
+
+  async listEcrRepositories(options: {
+    nextToken?: string
+    signal?: AbortSignal
+  } = {}): Promise<{ items: EcrRepositoryInfo[]; nextToken: string }> {
+    const raw = await this.ecr('DescribeRepositories', { maxResults: 100, nextToken: options.nextToken }, options.signal)
+    return { items: asArray(raw.repositories).map(mapEcrRepository), nextToken: asString(raw, 'nextToken') }
+  }
+
+  async listEcrImages(options: {
+    repositoryName: string
+    tagStatus?: string
+    nextToken?: string
+    signal?: AbortSignal
+  }): Promise<{ items: EcrImageIdInfo[]; nextToken: string }> {
+    const body: Record<string, unknown> = { repositoryName: options.repositoryName, maxResults: 100 }
+    if (options.tagStatus) body.filter = { tagStatus: options.tagStatus }
+    if (options.nextToken) body.nextToken = options.nextToken
+    const raw = await this.ecr('ListImages', body, options.signal)
+    return { items: asArray(raw.imageIds).map(mapEcrImageId), nextToken: asString(raw, 'nextToken') }
+  }
+
+  async describeEcrImages(options: {
+    repositoryName: string
+    imageTag?: string
+    nextToken?: string
+    signal?: AbortSignal
+  }): Promise<{ items: EcrImageInfo[]; nextToken: string }> {
+    const body: Record<string, unknown> = { repositoryName: options.repositoryName, maxResults: 100 }
+    if (options.imageTag) body.imageIds = [{ imageTag: options.imageTag }]
+    if (options.nextToken) body.nextToken = options.nextToken
+    const raw = await this.ecr('DescribeImages', body, options.signal)
+    return { items: asArray(raw.imageDetails).map(mapEcrImage), nextToken: asString(raw, 'nextToken') }
   }
 }
 

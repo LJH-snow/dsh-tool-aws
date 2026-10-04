@@ -40,6 +40,9 @@ npm install @libai168/dsh-tool-aws
 | `aws_list_cloudwatch_log_groups` | 按前缀列出 CloudWatch 日志组 |
 | `aws_get_cloudwatch_log_events` | 按日志流和时间范围读取日志事件 |
 | `aws_list_cloudwatch_metrics` | 按命名空间/指标名列出 CloudWatch 指标 |
+| `aws_ecr_list_repositories` | 列出区域内的 ECR 仓库 |
+| `aws_ecr_list_images` | 列出一个 ECR 仓库的镜像 tag/digest |
+| `aws_ecr_describe_images` | 查看 ECR 镜像详情（大小、扫描状态与漏洞级别计数） |
 
 ## 错误契约
 

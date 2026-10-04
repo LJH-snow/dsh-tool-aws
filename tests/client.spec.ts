@@ -165,6 +165,61 @@ describe('AwsClient', () => {
     await expect(client.listLambdaFunctions()).rejects.toThrow(AwsError)
   })
 
+  it('lists ECR repositories via the x-amz-json protocol', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      repositories: [{
+        repositoryName: 'app', repositoryArn: 'arn:aws:ecr:us-east-1:123456789012:repository/app', registryId: '123456789012',
+        repositoryUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/app', createdAt: '2026-01-01T00:00:00Z',
+        imageTagMutability: 'MUTABLE', imageScanningConfiguration: { scanOnPush: true },
+      }],
+      nextToken: 'tok2',
+    }))
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const result = await client.listEcrRepositories({ nextToken: 'tok1' })
+
+    expect(result.items[0]).toMatchObject({ name: 'app', registryId: '123456789012', tagMutability: 'MUTABLE', scanOnPush: true })
+    expect(result.nextToken).toBe('tok2')
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://api.ecr.us-east-1.amazonaws.com/')
+    expect(init.method).toBe('POST')
+    const headers = init.headers as Record<string, string>
+    expect(headers['content-type']).toBe('application/x-amz-json-1.1')
+    expect(headers['x-amz-target']).toBe('AmazonEC2ContainerRegistry_V20150921.DescribeRepositories')
+    expect(String(init.body)).toContain('"nextToken":"tok1"')
+  })
+
+  it('lists ECR image ids with a tag-status filter', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ imageIds: [{ imageDigest: 'sha256:abc', imageTag: 'v1' }, { imageDigest: 'sha256:def' }], nextToken: 'tok2' }))
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const result = await client.listEcrImages({ repositoryName: 'app', tagStatus: 'ANY' })
+
+    expect(result.items[0]).toMatchObject({ tag: 'v1', digest: 'sha256:abc' })
+    expect(result.items[1]).toMatchObject({ tag: '', digest: 'sha256:def' })
+    expect(result.nextToken).toBe('tok2')
+    const body = String((fetchImpl.mock.calls[0] as [string, RequestInit])[1].body)
+    expect(body).toContain('"repositoryName":"app"')
+    expect(body).toContain('"tagStatus":"ANY"')
+  })
+
+  it('describes ECR images with scan severity counts', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      imageDetails: [{
+        repositoryName: 'app', imageDigest: 'sha256:abc', imageTags: ['v1', 'latest'], imageSizeInBytes: 4096,
+        imagePushedAt: '2026-01-02T00:00:00Z', imageScanStatus: { status: 'COMPLETE' },
+        imageScanFindingsSummary: { findingSeverityCounts: { CRITICAL: 2, HIGH: 5 } },
+      }],
+    }))
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const result = await client.describeEcrImages({ repositoryName: 'app', imageTag: 'v1' })
+
+    expect(result.items[0]).toMatchObject({ digest: 'sha256:abc', tags: 'v1, latest', sizeBytes: 4096, scanStatus: 'COMPLETE', criticalCount: 2, highCount: 5 })
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://api.ecr.us-east-1.amazonaws.com/')
+    expect(String(init.body)).toContain('"imageTag":"v1"')
+    const headers = init.headers as Record<string, string>
+    expect(headers['x-amz-target']).toBe('AmazonEC2ContainerRegistry_V20150921.DescribeImages')
+  })
+
   it('signs with a deterministic authorization header for a fixed time', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({}))
     const client = new AwsClient({ ...creds, region: 'us-east-1', now: FIXED_NOW, fetchImpl })

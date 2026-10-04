@@ -25,7 +25,7 @@ describe('AwsClient', () => {
         },
       },
     }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', now: FIXED_NOW, fetchImpl })
     const identity = await client.stsGetCallerIdentity()
 
     expect(identity).toMatchObject({ account: '123456789012', userId: 'AIDAJQABLZS4A3QDU576Q', arn: 'arn:aws:iam::123456789012:user/Alice' })
@@ -134,7 +134,7 @@ describe('AwsClient', () => {
     expect(result.items[0]).toMatchObject({ timestamp: '1735689600000', logStreamName: 'stream-1', message: 'hello world' })
     const body = String((fetchImpl.mock.calls[0] as [string, RequestInit])[1].body)
     expect(body).toContain('Action=FilterLogEvents')
-    expect(body).toContain('logStreamNames=stream-1')
+    expect(body).toContain('logStreamNames.member.1=stream-1')
     expect(body).toContain('startTime=1735689600000')
   })
 
