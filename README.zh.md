@@ -21,9 +21,11 @@ npm install @libai168/dsh-tool-aws
     accessKeyId: 'AKIA...'
     secretAccessKey: '...'
     # sessionToken: '...'   # 临时凭证
-    # endpoint: '...'       # 本地 mock 用自定义 endpoint
+    # endpoint: '...'       # 可选的公共 HTTP(S) 根 endpoint
     # timeoutMs: 15000
 ```
+
+可选 `endpoint` 必须是绝对的 `http://` 或 `https://` 根地址（例如 `https://aws-api.example.test/`），且主机必须可公共访问。会拒绝 localhost、环回、私有、链路本地、CGNAT、组播，以及全部 IANA 特殊用途地址段（保留/文档/基准测试、`2001::/23` IETF 协议分配段、已废弃的站点本地、SRv6 SID、AS112，以及 IPv4-mapped/NAT64 形式），还有解析到这些地址的域名；不允许 credentials、query、fragment 或非根路径。DNS 解析失败时会在发出请求前拒绝。
 
 建议使用只读权限的 IAM 用户或角色（`ec2:DescribeInstances`、`s3:ListAllMyBuckets`、`lambda:ListFunctions`、`logs:DescribeLogGroups`、`logs:FilterLogEvents`、`cloudwatch:ListMetrics`、`sts:GetCallerIdentity`）。
 

@@ -1,8 +1,9 @@
 import { createHash, createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { AwsClient, AwsError } from '../src/client.ts'
+import { AwsClient, AwsError, type AwsClientOptions } from '../src/client.ts'
 
 const FIXED_NOW = new Date('2026-01-01T00:00:00.000Z')
+const stablePublicLookup: NonNullable<AwsClientOptions['lookupImpl']> = async () => [{ address: '93.184.216.34', family: 4 }]
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -26,7 +27,7 @@ describe('AwsClient', () => {
         },
       },
     }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', now: FIXED_NOW, fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', now: FIXED_NOW, fetchImpl, lookupImpl: stablePublicLookup })
     const identity = await client.stsGetCallerIdentity()
 
     expect(identity).toMatchObject({ account: '123456789012', userId: 'AIDAJQABLZS4A3QDU576Q', arn: 'arn:aws:iam::123456789012:user/Alice' })
@@ -63,7 +64,7 @@ describe('AwsClient', () => {
         nextToken: 'tok2',
       },
     }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     const result = await client.listEc2Instances({ filters: { 'tag:Name': 'web' } })
 
     expect(result.items[0]).toMatchObject({
@@ -86,7 +87,7 @@ describe('AwsClient', () => {
   it('parses S3 bucket list from XML', async () => {
     const xml = '<?xml version="1.0"?><ListAllMyBucketsResult><Buckets><Bucket><Name>my-bucket</Name><CreationDate>2025-01-02T03:04:05.000Z</CreationDate></Bucket></Buckets></ListAllMyBucketsResult>'
     const fetchImpl = vi.fn(async () => new Response(xml, { status: 200, headers: { 'content-type': 'application/xml' } }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     const result = await client.listS3Buckets()
 
     expect(result.items).toEqual([{ name: 'my-bucket', creationDate: '2025-01-02T03:04:05.000Z', region: '' }])
@@ -102,7 +103,7 @@ describe('AwsClient', () => {
       ],
       NextMarker: 'marker2',
     }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     const result = await client.listLambdaFunctions({ marker: 'marker1' })
 
     expect(result.items[0]).toMatchObject({ name: 'my-fn', runtime: 'nodejs20.x', handler: 'index.handler', memorySize: 256, timeout: 30, state: 'Active' })
@@ -116,7 +117,7 @@ describe('AwsClient', () => {
     const fetchImpl = vi.fn(async () => jsonResponse({
       DescribeLogGroupsResponse: { logGroups: [{ logGroupName: '/aws/lambda/my-fn', retentionInDays: 14, storedBytes: 1000 }] },
     }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     const result = await client.listCloudWatchLogGroups({ prefix: '/aws/lambda' })
 
     expect(result.items[0]).toMatchObject({ name: '/aws/lambda/my-fn', retentionDays: 14, storedBytes: 1000 })
@@ -129,7 +130,7 @@ describe('AwsClient', () => {
     const fetchImpl = vi.fn(async () => jsonResponse({
       FilterLogEventsResponse: { events: [{ timestamp: '1735689600000', logStreamName: 'stream-1', message: 'hello world' }] },
     }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     const result = await client.getCloudWatchLogEvents({ logGroupName: '/aws/lambda/my-fn', logStreamName: 'stream-1', startTime: 1735689600000, endTime: 1735776000000 })
 
     expect(result.items[0]).toMatchObject({ timestamp: '1735689600000', logStreamName: 'stream-1', message: 'hello world' })
@@ -143,7 +144,7 @@ describe('AwsClient', () => {
     const fetchImpl = vi.fn(async () => jsonResponse({
       ListMetricsResponse: { metrics: [{ Namespace: 'AWS/EC2', MetricName: 'CPUUtilization', Dimensions: [{ Name: 'InstanceId', Value: 'i-123' }] }] },
     }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     const result = await client.listCloudWatchMetrics({ namespace: 'AWS/EC2' })
 
     expect(result.items[0]).toMatchObject({ namespace: 'AWS/EC2', name: 'CPUUtilization', dimensions: 'InstanceId=i-123' })
@@ -152,16 +153,85 @@ describe('AwsClient', () => {
     expect(body).toContain('Namespace=AWS%2FEC2')
   })
 
+  it('uses a custom root endpoint for every service path', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ Functions: [] }))
+    const client = new AwsClient({ ...creds, region: 'us-east-1', endpoint: 'https://aws-api.example.test/', fetchImpl, lookupImpl: stablePublicLookup })
+    await client.listLambdaFunctions()
+
+    const [url] = fetchImpl.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://aws-api.example.test/2015-03-31/functions')
+  })
+
+  it('rejects unsafe custom endpoint URLs during construction', () => {
+    for (const endpoint of [
+      'aws-api.example.test',
+      'ftp://aws-api.example.test/',
+      'https://user:secret@aws-api.example.test/',
+      'https://aws-api.example.test/api',
+      'https://aws-api.example.test/?token=secret',
+      'https://aws-api.example.test/#fragment',
+    ]) {
+      expect(() => new AwsClient({ endpoint })).toThrow(AwsError)
+    }
+  })
+
+  it('rejects literal local, private, and reserved endpoint addresses before fetch', async () => {
+    for (const address of [
+      'localhost',
+      '127.0.0.1',
+      '10.0.0.1',
+      '100.64.0.1',
+      '169.254.169.254',
+      '192.0.2.1',
+      '198.18.0.1',
+      '224.0.0.1',
+      '[::1]',
+      '[fc00::1]',
+      '[fe80::1]',
+      '[2001:db8::1]',
+      '[ff02::1]',
+      // IANA special-purpose blocks that previously slipped through.
+      '192.175.48.1',
+      '[fec0::1]',
+      '[2001:3::1]',
+      '[2001:4:112::1]',
+      '[2001:20::1]',
+      '[2001:30::1]',
+      '[5f00::1]',
+      '[100:0:0:1::1]',
+      '[2620:4f:8000::1]',
+    ]) {
+      const fetchImpl = vi.fn()
+      const client = new AwsClient({ ...creds, endpoint: `https://${address}/`, fetchImpl })
+      await expect(client.stsGetCallerIdentity()).rejects.toMatchObject({ name: 'AwsError', code: 'UnsafeEndpoint' })
+      expect(fetchImpl).not.toHaveBeenCalled()
+    }
+  })
+
+  it('fails closed when DNS resolves to a private address or fails', async () => {
+    const privateFetch = vi.fn()
+    const privateLookup: NonNullable<AwsClientOptions['lookupImpl']> = async () => [{ address: '192.168.1.10', family: 4 }]
+    const privateClient = new AwsClient({ ...creds, endpoint: 'https://private.example.test/', fetchImpl: privateFetch, lookupImpl: privateLookup })
+    await expect(privateClient.stsGetCallerIdentity()).rejects.toThrow(AwsError)
+    expect(privateFetch).not.toHaveBeenCalled()
+
+    const failingFetch = vi.fn()
+    const failingLookup: NonNullable<AwsClientOptions['lookupImpl']> = async () => { throw new Error('DNS failure') }
+    const failingClient = new AwsClient({ ...creds, endpoint: 'https://unresolvable.example.test/', fetchImpl: failingFetch, lookupImpl: failingLookup })
+    await expect(failingClient.stsGetCallerIdentity()).rejects.toThrow(AwsError)
+    expect(failingFetch).not.toHaveBeenCalled()
+  })
+
   it('throws AwsError without credentials', async () => {
     const fetchImpl = vi.fn()
-    const client = new AwsClient({ region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     await expect(client.stsGetCallerIdentity()).rejects.toThrow(AwsError)
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('throws AwsError on non-OK HTTP response', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ __type: 'AccessDeniedException' }, 403))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     await expect(client.listLambdaFunctions()).rejects.toThrow(AwsError)
   })
 
@@ -174,7 +244,7 @@ describe('AwsClient', () => {
       }],
       nextToken: 'tok2',
     }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     const result = await client.listEcrRepositories({ nextToken: 'tok1' })
 
     expect(result.items[0]).toMatchObject({ name: 'app', registryId: '123456789012', tagMutability: 'MUTABLE', scanOnPush: true })
@@ -190,7 +260,7 @@ describe('AwsClient', () => {
 
   it('lists ECR image ids with a tag-status filter', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ imageIds: [{ imageDigest: 'sha256:abc', imageTag: 'v1' }, { imageDigest: 'sha256:def' }], nextToken: 'tok2' }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     const result = await client.listEcrImages({ repositoryName: 'app', tagStatus: 'ANY' })
 
     expect(result.items[0]).toMatchObject({ tag: 'v1', digest: 'sha256:abc' })
@@ -209,7 +279,7 @@ describe('AwsClient', () => {
         imageScanFindingsSummary: { findingSeverityCounts: { CRITICAL: 2, HIGH: 5 } },
       }],
     }))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', fetchImpl, lookupImpl: stablePublicLookup })
     const result = await client.describeEcrImages({ repositoryName: 'app', imageTag: 'v1' })
 
     expect(result.items[0]).toMatchObject({ digest: 'sha256:abc', tags: 'v1, latest', sizeBytes: 4096, scanStatus: 'COMPLETE', criticalCount: 2, highCount: 5 })
@@ -222,7 +292,7 @@ describe('AwsClient', () => {
 
   it('signs with a deterministic authorization header for a fixed time', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({}))
-    const client = new AwsClient({ ...creds, region: 'us-east-1', now: FIXED_NOW, fetchImpl })
+    const client = new AwsClient({ ...creds, region: 'us-east-1', now: FIXED_NOW, fetchImpl, lookupImpl: stablePublicLookup })
     await client.stsGetCallerIdentity()
 
     const headers = (fetchImpl.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>

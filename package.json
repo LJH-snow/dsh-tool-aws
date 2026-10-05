@@ -1,7 +1,7 @@
 {
   "name": "@libai168/dsh-tool-aws",
   "description": "AWS read-only tools for DeepSeek Harness: identity, EC2 instances, S3 buckets, Lambda functions, and CloudWatch logs/metrics",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

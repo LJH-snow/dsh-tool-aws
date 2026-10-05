@@ -1,5 +1,6 @@
 /** AWS read-only client with SigV4 signing and injected fetch for testability. */
 
+import { assertSafeUrl, normalizeEndpoint, type LookupImpl, UrlSecurityError } from './url-security.js'
 import { signRequest } from './signer.js'
 
 export interface AwsClientOptions {
@@ -11,13 +12,15 @@ export interface AwsClientOptions {
   secretAccessKey?: string
   /** Session token for temporary credentials. */
   sessionToken?: string
-  /** Custom endpoint base (scheme+host), useful for local mocking. */
+  /** Custom endpoint origin; must be a public HTTP(S) root URL. */
   endpoint?: string
   /** Request timeout in milliseconds. 0 disables the timeout. */
   timeoutMs?: number
   /** Fixed clock for deterministic signature tests. */
   now?: Date
   fetchImpl?: typeof fetch
+  /** Test-only DNS lookup override; production uses node:dns/promises. */
+  lookupImpl?: LookupImpl
 }
 
 export class AwsError extends Error {
@@ -358,16 +361,23 @@ export class AwsClient {
   private readonly timeoutMs: number
   private readonly now: Date | undefined
   private readonly fetchImpl: typeof fetch
+  private readonly lookupImpl: LookupImpl | undefined
 
   constructor(options: AwsClientOptions = {}) {
     this.region = options.region ?? 'us-east-1'
     this.accessKeyId = options.accessKeyId ?? ''
     this.secretAccessKey = options.secretAccessKey ?? ''
     this.sessionToken = options.sessionToken ?? ''
-    this.endpoint = (options.endpoint ?? '').replace(/\/+$/, '')
+    try {
+      this.endpoint = normalizeEndpoint(options.endpoint)
+    } catch (error) {
+      if (error instanceof UrlSecurityError) throw new AwsError(error.message, 400, 'InvalidEndpoint')
+      throw error
+    }
     this.timeoutMs = options.timeoutMs ?? 15000
     this.now = options.now
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch
+    this.lookupImpl = options.lookupImpl
   }
 
   hasCredentials(): boolean {
@@ -479,6 +489,14 @@ export class AwsClient {
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
     const timer = this.timeoutMs > 0 ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined
     try {
+      try {
+        await assertSafeUrl(url, this.lookupImpl)
+      } catch (error) {
+        if (error instanceof UrlSecurityError) {
+          throw new AwsError('AWS endpoint is not allowed for network access.', 400, 'UnsafeEndpoint')
+        }
+        throw error
+      }
       const response = await this.fetchImpl(url.toString(), {
         method,
         headers,

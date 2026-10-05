@@ -21,9 +21,11 @@ Requires `@deepseek-ai/cordis` (^4.0.1) and `@deepseek-ai/dsh-tools` (^0.1.0-rc.
     accessKeyId: 'AKIA...'
     secretAccessKey: '...'
     # sessionToken: '...'   # temporary credentials
-    # endpoint: '...'       # custom endpoint for local mocking
+    # endpoint: '...'       # optional public HTTP(S) root endpoint
     # timeoutMs: 15000
 ```
+
+The optional `endpoint` must be an absolute `http://` or `https://` root URL (for example, `https://aws-api.example.test/`). Only publicly reachable hosts are allowed. Localhost, loopback, private, link-local, carrier-grade NAT, multicast, and every IANA special-purpose block — reserved/documentation/benchmark ranges, the `2001::/23` IETF protocol assignments prefix, deprecated site-local, SRv6 SIDs, AS112, and IPv4-mapped/NAT64 forms — are rejected, together with hostnames resolving to any such address. Credentials, query strings, fragments, and non-root paths are not allowed. DNS failures are rejected before any request is sent.
 
 Use an IAM user or role with read-only permissions (`ec2:DescribeInstances`, `s3:ListAllMyBuckets`, `lambda:ListFunctions`, `logs:DescribeLogGroups`, `logs:FilterLogEvents`, `cloudwatch:ListMetrics`, `sts:GetCallerIdentity`).
 

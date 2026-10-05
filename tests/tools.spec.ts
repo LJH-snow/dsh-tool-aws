@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AwsClient } from '../src/client.ts'
+import { AwsClient, type AwsClientOptions } from '../src/client.ts'
 import { createTools } from '../src/index.ts'
 
+const stablePublicLookup: NonNullable<AwsClientOptions['lookupImpl']> = async () => [{ address: '93.184.216.34', family: 4 }]
+
 function makeClient(fetchImpl: typeof fetch = async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })) {
-  return new AwsClient({ region: 'us-east-1', accessKeyId: 'k', secretAccessKey: 's', fetchImpl })
+  return new AwsClient({ region: 'us-east-1', accessKeyId: 'k', secretAccessKey: 's', fetchImpl, lookupImpl: stablePublicLookup })
 }
 
 function tool(name: string) {
